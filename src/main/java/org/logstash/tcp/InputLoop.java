@@ -16,10 +16,12 @@ import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.GenericFutureListener;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import co.elastic.logstash.api.NamespacedMetric;
 
 import java.io.Closeable;
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Plain TCP Server Implementation.
@@ -60,6 +62,11 @@ public final class InputLoop implements Runnable, Closeable {
     private final String host;
 
     /**
+     * Namespaced Metric.
+     */
+    private final NamespacedMetric metric;
+
+    /**
      * Ctor.
      * @param host Host to bind the listen to
      * @param port Port to listen on
@@ -67,17 +74,18 @@ public final class InputLoop implements Runnable, Closeable {
      * @param keepAlive set to true to instruct the socket to issue TCP keep alive
      */
     public InputLoop(final String host, final int port, final Decoder decoder, final boolean keepAlive,
-                     final SslContext sslContext) {
+                     final SslContext sslContext, final NamespacedMetric metric) {
         this.sslContext = sslContext;
         this.host = host;
         this.port = port;
+        this.metric = metric;
         worker = new NioEventLoopGroup();
         boss = new NioEventLoopGroup(1);
         serverBootstrap = new ServerBootstrap().group(boss, worker)
             .channel(NioServerSocketChannel.class)
             .option(ChannelOption.SO_BACKLOG, 1024)
             .childOption(ChannelOption.SO_KEEPALIVE, keepAlive)
-            .childHandler(new InputLoop.InputHandler(decoder, sslContext));
+            .childHandler(new InputLoop.InputHandler(decoder, sslContext, metric));
     }
 
     @Override
@@ -108,6 +116,14 @@ public final class InputLoop implements Runnable, Closeable {
      */
     private static final class InputHandler extends ChannelInitializer<SocketChannel> {
         private final String SSL_HANDLER = "ssl-handler";
+        public static final String CURRENT_CONNECTIONS = "current_connections";
+        public static final String PEAK_CONNECTIONS = "peak_connections";
+
+        /**
+         * Number of active connections.
+         */
+        private final AtomicInteger activeConnections = new AtomicInteger(0);
+        private final AtomicInteger peakConnections = new AtomicInteger(0);
 
         /**
          * {@link Decoder} supplied by JRuby.
@@ -120,16 +136,29 @@ public final class InputLoop implements Runnable, Closeable {
         private final SslContext sslContext;
 
         /**
+         * Namespaced Metric.
+         */
+        private final NamespacedMetric metric;
+
+        /**
          * Ctor.
          * @param decoder {@link Decoder} provided by JRuby.
          */
-        InputHandler(final Decoder decoder, final SslContext sslContext) {
+        InputHandler(final Decoder decoder, final SslContext sslContext, final NamespacedMetric metric) {
             this.decoder = decoder;
             this.sslContext = sslContext;
+            this.metric = metric;
         }
 
         @Override
         protected void initChannel(final SocketChannel channel) throws Exception {
+            Integer currentActiveConnections = activeConnections.incrementAndGet();
+            if (currentActiveConnections > peakConnections.get()) {
+                peakConnections.set(currentActiveConnections);
+                metric.gauge(PEAK_CONNECTIONS, currentActiveConnections);
+            }
+            metric.gauge(CURRENT_CONNECTIONS, currentActiveConnections);
+
             Decoder localCopy = decoder.copy();
 
             // if SSL is enabled, the SSL handler must be added to the pipeline first
@@ -138,7 +167,7 @@ public final class InputLoop implements Runnable, Closeable {
             }
 
             channel.pipeline().addLast(new DecoderAdapter(localCopy, logger));
-            channel.closeFuture().addListener(new FlushOnCloseListener(localCopy));
+            channel.closeFuture().addListener(new FlushOnCloseListener(localCopy, metric, activeConnections));
 
             if (logger.isDebugEnabled()) {
                 logger.debug(remoteChannelInfo(channel) + ": initialized channel");
@@ -162,14 +191,29 @@ public final class InputLoop implements Runnable, Closeable {
             private final Decoder decoder;
 
             /**
+             * Namespaced Metric.
+             */
+            private final NamespacedMetric metric;
+
+            /**
+             * Number of active connections.
+             */
+            private final AtomicInteger activeConnections;
+
+            /**
              * Ctor.
              * @param decoder {@link Decoder} provided by JRuby.
              */
-            FlushOnCloseListener(Decoder decoder) { this.decoder = decoder; }
+            FlushOnCloseListener(Decoder decoder, NamespacedMetric metric, AtomicInteger activeConnections) {
+                this.decoder = decoder;
+                this.metric = metric;
+                this.activeConnections = activeConnections;
+            }
 
             @Override
             public void operationComplete(Future future) throws Exception {
                 decoder.flush();
+                metric.gauge(InputHandler.CURRENT_CONNECTIONS, activeConnections.decrementAndGet());
             }
         }
 
