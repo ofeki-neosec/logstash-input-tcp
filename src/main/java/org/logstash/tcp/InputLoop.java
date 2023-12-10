@@ -123,7 +123,7 @@ public final class InputLoop implements Runnable, Closeable {
          * Number of active connections.
          */
         private final AtomicInteger activeConnections = new AtomicInteger(0);
-        private final AtomicInteger peakConnections = new AtomicInteger(0);
+        private int peakConnections = 0;
 
         /**
          * {@link Decoder} supplied by JRuby.
@@ -153,8 +153,8 @@ public final class InputLoop implements Runnable, Closeable {
         @Override
         protected void initChannel(final SocketChannel channel) throws Exception {
             Integer currentActiveConnections = activeConnections.incrementAndGet();
-            if (currentActiveConnections > peakConnections.get()) {
-                peakConnections.set(currentActiveConnections);
+            if (currentActiveConnections > peakConnections) {
+                peakConnections = currentActiveConnections;
                 metric.gauge(PEAK_CONNECTIONS, currentActiveConnections);
             }
             metric.gauge(CURRENT_CONNECTIONS, currentActiveConnections);
