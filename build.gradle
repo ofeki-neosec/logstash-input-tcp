@@ -23,6 +23,7 @@ apply plugin: "java"
 apply plugin: 'maven-publish'
 apply plugin: "distribution"
 apply plugin: "idea"
+apply from: LOGSTASH_CORE_PATH + "/../rubyUtils.gradle"
 
 group "org.logstash.inputs"
 version Files.readAllLines(Paths.get("version")).first()
@@ -60,6 +61,7 @@ dependencies {
   compileOnly 'org.apache.logging.log4j:log4j-api:2.17.1' // provided by Logstash
   compileOnly group: 'org.jruby', name: 'jruby-core', version: "9.4.3.0" // provided by Logstash
   compileOnly group: 'org.bouncycastle', name: 'bcpkix-jdk18on', version: "1.71"  // provided by Logstash (JRuby-OpenSSL)
+  compileOnly fileTree(dir: LOGSTASH_CORE_PATH, include: "**/logstash-core.jar") // provided by Logstash
 }
 
 test {
